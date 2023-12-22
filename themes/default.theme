@@ -1,0 +1,18 @@
+# SYNTAX HIGHLIGHTING THEME definition file
+# comments and blank lines are ignored
+# tokens must appear as [[tokenname]] in the .nanorc syntax highlighting files
+
+# COLOR defs:
+# color colorname colorvalue
+# TOKEN defs:
+# tokenname colorvalue
+# tokenname colorname
+
+# color definitions are optional and only for convenience
+# valid names must contain only -.a-zA-Z0-9
+# valid color values are in the format bold,italic,foreground,background
+
+# foreground/background:
+# web-safe colors (#000, #333, #123, #fff, ...)
+# nanorc named colors (plum, teal, latte, ...)
+# default colors (white, red, black, lightred, ...)
