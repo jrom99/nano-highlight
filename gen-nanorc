@@ -1,36 +1,325 @@
-#!/bin/bash
-## Generating correct `.nanorc` file.
-## You should to set right path starts from $HOME, ends with slash.
-## Also it needs blank (or not) ~/.nanorc file
+#!/usr/bin/env bash
+# This script lets you update syntax files with colors from a theme file
+# This script also lets you add include statements for each syntax file
+#
+# @author Junior Martins (htts://github.com/jrom99)
+# @license: MIT license (MIT)
 
-nano_highlight_path="$HOME/nano-highlight/"
-nanorc_path="$HOME/"
-
-if [[ ! -e "$nanorc_path".nanorc ]]; then
-    echo "You don't have .nanorc file."
-    echo -n "Do you wish to create it in '$nanorc_path' folder? (Y/n) "
-    read use_home
-    if echo "$use_home" | grep -iq "^[Nn]"; then
-        while [[ ! -n "$path" || ! -d "$path" ]]; do
-            echo -n "Please set the valid path. '$path' is not valid path. "
-            read path
-        done
-        nanorc_path=$path
-    fi
-    touch "$nanorc_path".nanorc
-    echo "'$nanorc_path.nanorc' file created."
+if test -z "$BASH_VERSION"; then
+	printf "Error: this script only works in bash.\n" >&2
+	exit 1
 fi
 
-if [[ ! -d $nano_highlight_path ]]; then
-    while [[ ! -n "$folder" || ! -d "$HOME/$folder" ]]; do
-        echo "'$nano_highlight_path' is not a valid folder."
-        echo -n "Please set your nano-highlight path. $HOME/"
-        read folder
-    done
-    nano_highlight_path="$HOME/$folder/"
+if (( BASH_VERSINFO[0] * 10 + BASH_VERSINFO[1] < 40 )); then
+	printf "Error: this script requires bash version >= 4.0\n" >&2
+	exit 1
 fi
 
-> "$nanorc_path".nanorc
-for syntax in $(ls $nano_highlight_path*.nanorc); do
-    echo "include \"$syntax\"" >> "$nanorc_path".nanorc
-done
+set -o errexit # exit immediately if a command exits with a non-zero status
+
+PROGNAME="$(basename "${BASH_SOURCE[0]}")"
+VERSION="1.0"
+readonly PROGNAME VERSION
+
+readonly -a ARGS=("$@")
+
+SYNTAX_DIR="./syntax"
+THEME_DIR="./themes"
+
+msg() {
+	printf "%s: %b\n" "$PROGNAME" "$*"
+}
+
+err() {
+	msg "Error:" "$*" >&2
+}
+
+fatal() {
+	err "$*"
+	exit 1
+}
+
+verbose() {
+	[ -t 4 ] || return 0
+	msg "$@" >&4
+}
+
+usage() {
+	cat <<- EOF
+	USAGE
+	  $ $PROGNAME [--theme THEME ] --update [SYNTAX ...]
+	  $ $PROGNAME [--rcfile FILE ] --add-include [SYNTAX ...]
+	  $ $PROGNAME --list-themes
+
+	OPTIONS
+	  -f --rcfile FILE      use FILE as nano settings file
+	  --add-include         add include statement for SYNTAX
+	                           (default: add "include *.nanorc")
+
+	  -t --theme THEME      use this color scheme file (default default.theme)
+	  -u --update SYNTAX    update .nanorc file to match tokens
+	                           (default: update all .nanorc syntax files)
+
+	  -l --list-themes      list available themes
+
+	  -h --help             show this help
+	  -v --verbose          be verbose
+	  -V --version          print $PROGNAME version and exit
+	EOF
+
+	exit "${1:-0}"
+}
+
+get_rc_file() {
+	local -a NANORC_PATHS=("$HOME/.nanorc" "${XDG_CONFIG_HOME:-$HOME/.config}/nano/nanorc" "${XDG_CONFIG_HOME:-$HOME/.config}/nanorc")
+
+	if [[ -z "$RC_FILE" ]]; then
+		for nanorc in "${NANORC_PATHS[@]}"; do
+			[[ -f "$nanorc" ]] || continue
+			verbose "Config file '$nanorc' was found"
+			RC_FILE="$nanorc"
+		done
+
+		if [[ -z "$RC_FILE" ]]; then
+			RC_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/nano/nanorc"
+		fi
+	fi
+
+	if [[ ! -f "$RC_FILE" ]]; then
+		read -r -p "No RC_FILE found, do you want to create one on '$RC_FILE'? [Y/n] " answer
+		case ${answer:0:1} in
+			y|Y|s|S)
+				verbose "Creating file '$RC_FILE'"
+				mkdir -p "$(dirname "${RC_FILE}")"
+				touch "$RC_FILE"
+				;;
+			*)
+				msg "No file written"
+				exit 0
+				;;
+		esac
+	fi
+}
+
+update_rc_file() {
+	if grep -qF "$1" "$RC_FILE" ; then
+		verbose "found on rcfile: $1"
+	else
+		printf '\n%s\n' "$1" >> "$RC_FILE"
+		verbose "written to rcfile: $1 "
+	fi
+}
+
+load_theme() {
+	declare -g -A TOKENS
+	declare -g -A COLORS
+
+	THEME_DIR="$(readlink -f "$THEME_DIR")"
+
+	if [[ ! -d "$THEME_DIR" ]]; then
+		fatal "Themes definition directory not found"
+	fi
+
+	if [[ -z "$THEME_NAME" ]]; then
+		# default default.theme
+		THEME_FILE="$THEME_DIR/default.theme"
+	else
+		THEME_FILE="$THEME_DIR/${THEME_NAME%.theme}.theme"
+	fi
+
+	if [[ ! -f "$THEME_FILE" ]]; then
+		fatal "Theme file '$THEME_FILE' not found"
+	fi
+
+	verbose "Parsing theme file '$THEME_FILE'"
+
+	# parse colors definitions and key=value pairs
+	# color regex can match against empty string
+	COLOR_REGEX="^(bold,)?(italic,)?(((bright|light)?(white|black|red|blue|green|yellow|magenta|cyan))|normal|pink|purple|mauve|lagoon|mint|lime|peach|orange|latte|rosy|beet|plum|sea|sky|slate|teal|sage|brown|ocher|sand|tawny|brick|crimson|grey|gray|#[[:xdigit:]]{3})?(,(((light)?(white|black|red|blue|green|yellow|magenta|cyan))|normal|pink|purple|mauve|lagoon|mint|lime|peach|orange|latte|rosy|beet|plum|sea|sky|slate|teal|sage|brown|ocher|sand|tawny|brick|crimson|grey|gray|#[[:xdigit:]]{3}))?$"
+	COLOR_DEF="^color[[:blank:]]+([-.a-zA-Z0-9]+)[[:blank:]=]+([^[:blank:]]+)"
+	TOKEN_DEF="^([-.a-zA-Z0-9]+)[[:blank:]=]+([^[:blank:]]+)"
+
+	while read -r line; do
+		if [[ "$line" =~ ^[::blank::]*(#.*)?$ ]]; then
+			continue
+		elif [[ "$line" =~ $COLOR_DEF ]]; then
+			color_name="${BASH_REMATCH[1]}"
+			color_value="${BASH_REMATCH[2]}"
+
+			if [[ "$color_value" =~ $COLOR_REGEX && -n "${BASH_REMATCH[0]}" ]]; then
+				COLORS[$color_name]="$color_value"
+			else
+				msg "Ignoring invalid color definition for '$color_name'='$color_value'"
+			fi
+		elif [[ "$line" =~ $TOKEN_DEF ]]; then
+			token="${BASH_REMATCH[1]}"
+			value="${BASH_REMATCH[2]}"
+
+			if [[ -n "${COLORS[$value]}" ]]; then
+				TOKENS[$token]="${COLORS[$value]}"
+			elif [[ "$value" =~ $COLOR_REGEX && -n "${BASH_REMATCH[0]}" ]]; then
+				TOKENS[$token]="$value"
+			else
+				msg "Ignoring invalid token definition for '$token'='$value'"
+			fi
+		else
+			err "Unable to parse line '$line'"
+		fi
+	done < "$THEME_FILE"
+
+	verbose "Parsed ${#COLORS[@]} colors"
+	verbose "Parsed ${#TOKENS[@]} tokens"
+}
+
+get_syntaxes() {
+	declare -g -A SYNTAXES
+
+	SYNTAX_DIR="$(readlink -f "$SYNTAX_DIR")"
+
+	if [[ ! -d "$SYNTAX_DIR" ]]; then
+		fatal "Directory with syntax definitions not found"
+	fi
+
+	if [[ ${#args[@]} -eq 0 ]]; then
+		# use all syntaxes
+		for file in "$SYNTAX_DIR"/*.nanorc; do
+			syn="${file%.nanorc}"
+			syn="${syn##*/}"
+
+			SYNTAXES[$syn]="$file"
+		done
+	else
+		# use provided ones
+		for syn in "${args[@]}"; do
+			syn="${syn%.nanorc}"
+			file="$SYNTAX_DIR/$syn.nanorc"
+			if [[ -f "$file" ]]; then
+				SYNTAXES[$syn]="$file"
+			else
+				fatal "Syntax file '$file' not found"
+			fi
+		done
+	fi
+}
+
+unregex() {
+   # http://stackoverflow.com/a/2705678/120999
+   sed -e 's/[]\/()$*.^|[]/\\&/g' <<< "$1"
+}
+
+get_sed_cmd() {
+	declare -g -a sed_cmd
+
+	for token in "${!TOKENS[@]}"; do
+		sed_cmd+=( -e )
+		sed_cmd+=( "s/color\s+$(unregex "[[$token]]")/color $(unregex "${TOKENS[$token]}")/g" )
+	done
+}
+
+update_syntaxes() {
+	for syn in "${!SYNTAXES[@]}"; do
+		verbose "Updating $NANO_DIR/$syn.nanorc"
+		sed "${sed_cmd[@]}" "${SYNTAXES[$syn]}" > "$NANO_DIR/$syn.nanorc"
+
+		if grep -qoP "(?<=color\s)\s*\[\[[^\]]+\]\]" "$NANO_DIR/$syn.nanorc"; then
+			token="$(grep -oP -m1 "(?<=color\s)\s*\[\[[^\]]+\]\]" "$NANO_DIR/$syn.nanorc")"
+			msg "Ignoring undefined token '$token' in file '$syn.nanorc'"
+		fi
+	done
+}
+
+parse_args() {
+	# show help if no argument is passed
+	if [[ -z "$1" ]]; then
+		usage 2
+	fi
+
+	# parse kwargs
+	while [ $# -gt 0 ]; do
+		case $1 in
+			-u|--update)
+				OPERATION="update"
+				;;
+			-t|--theme) shift;
+				THEME_NAME="$1"
+				;;
+			-f|--rc_file|--rcfile) shift;
+				RC_FILE="$1"
+				;;
+			--add-include)
+				OPERATION="add_include"
+				;;
+			-l|--list-themes)
+				OPERATION="list_themes"
+				;;
+			-v|--verbose)
+				VERBOSE=1
+				;;
+			-h|--help)
+				usage 0
+				;;
+			-V|--version)
+				printf "%s %s\n" "$PROGNAME" "$VERSION"; exit 0
+				;;
+			-*)
+				err "illegal option -- '$1'"; usage 2
+				;;
+			*)
+				args+=( "$1" )
+				;;
+		esac
+		shift
+	done
+
+	if [[ -z "$OPERATION" ]]; then
+		msg "Nothing to do."
+		exit 2
+	fi
+}
+
+main() {
+	declare OPERATION RC_FILE THEME_NAME
+	declare -i VERBOSE="${VERBOSE:-0}"
+	declare -a args
+
+	declare NANO_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/nano"
+
+	parse_args "${ARGS[@]}"
+
+	if [[ "$VERBOSE" -eq "1" ]]; then
+		# open a file descriptor for verbose messages
+		exec 4>&1
+		# close the file descriptor before exiting
+		trap 'exec 4>&-' EXIT HUP INT TERM
+	fi
+
+	case "$OPERATION" in
+		add_include)
+			get_rc_file
+			if [[ ${#args[@]} -eq 0 ]]; then
+				update_rc_file "include \"$NANO_DIR/*.nanorc\""
+			else
+				# no check
+				for syntax in "${args[@]}"; do
+					update_rc_file "include \"$NANO_DIR/${syntax%.nanorc}.nanorc"
+				done
+			fi
+			;;
+		update)
+			load_theme
+			get_syntaxes
+			get_sed_cmd
+			update_syntaxes
+			;;
+		list_themes)
+			for theme in "$THEME_DIR"/*.theme; do
+				echo "${theme##*/}"
+			done
+			;;
+	esac
+
+	verbose "Done!"
+	exit 0
+}
+
+main
